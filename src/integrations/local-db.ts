@@ -52,6 +52,15 @@ export function getLocalDb(): Dexie {
     });
     database.version(14).stores({ requisitionDrafts: 'draftId' });
     database.version(15).stores({ requisitionBatchDrafts: 'draftId' });
+    database.version(16).stores({
+      requisitionCopies: 'id',
+      requisitionCopyLifecycles: 'id',
+      requisitionAccess: 'userId',
+    });
+    database.version(17).stores({
+      requisitionCopies: 'id, *batch.requestedIds',
+      requisitionDrafts: 'draftId',
+    });
   }
   return database;
 }
@@ -67,6 +76,9 @@ export const LOCAL_TABLES = {
   homeStockDownloads: 'homeStockDownloads',
   receiveCatalogDownloads: 'receiveCatalogDownloads',
   stockCardHistory: 'stockCardHistory',
+  requisitionCopies: 'requisitionCopies',
+  requisitionCopyLifecycles: 'requisitionCopyLifecycles',
+  requisitionAccess: 'requisitionAccess',
   requisitionDrafts: 'requisitionDrafts',
   requisitionBatchDrafts: 'requisitionBatchDrafts',
   physicalInventoryDrafts: 'physicalInventoryDrafts',

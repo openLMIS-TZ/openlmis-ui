@@ -1,0 +1,95 @@
+import { expect, it, vi } from 'vitest';
+import { readCopies } from '@/features/requisitions/lib/offline-copies';
+import { localRequisitions } from '@/features/requisitions/lib/offline-search';
+import { LocalDataUnavailableError } from '@/lib/local-data';
+
+vi.mock('@/features/requisitions/lib/offline-copies', () => ({ readCopies: vi.fn() }));
+vi.mock('@/features/requisitions/lib/offline-access', () => ({
+  readRequisitionAccess: vi.fn(async () => {
+    throw new LocalDataUnavailableError();
+  }),
+  mayViewCopy: vi.fn(),
+  mayApproveSavedCopy: vi.fn(),
+}));
+
+import type { RequisitionCopy } from '@/features/requisitions/lib/offline-copies';
+import { localPage, searchCopies } from '@/features/requisitions/lib/offline-search';
+import type { RequisitionsQuery } from '@/features/requisitions/lib/types';
+
+const query: RequisitionsQuery = {
+  facility: 'f',
+  page: 0,
+  size: 1,
+  sort: ['createdDate,asc', 'id'],
+};
+const copy = (id: string, createdDate: string, status = 'AUTHORIZED'): RequisitionCopy => ({
+  id,
+  userId: 'u',
+  formatVersion: 1,
+  generation: 0,
+  revision: 1,
+  fetchedAt: 1,
+  summary: {
+    id,
+    emergency: false,
+    status: status as RequisitionCopy['summary']['status'],
+    createdDate,
+    facility: { id: 'f' },
+    program: { id: 'p' },
+    processingPeriod: { id: 'period' },
+  },
+});
+it('filters the complete set by inclusive deployment dates and status before sorting and paging', () => {
+  const copies = [
+    copy('late', '2026-11-04T04:59:59Z'),
+    copy('wrong-status', '2026-11-03T12:00:00Z', 'APPROVED'),
+    copy('early', '2026-11-03T05:00:00Z'),
+    copy('next', '2026-11-04T05:00:00Z'),
+  ];
+  const rows = searchCopies(
+    copies,
+    {
+      ...query,
+      initiatedDateFrom: '2026-11-03',
+      initiatedDateTo: '2026-11-03',
+      requisitionStatus: 'AUTHORIZED',
+    },
+    'America/New_York',
+  );
+  expect(rows.map((row) => row.id)).toEqual(['early', 'late']);
+  expect(localPage(rows, 1, 1)).toMatchObject({
+    content: [copies[0]],
+    totalElements: 2,
+    totalPages: 2,
+  });
+});
+it('breaks equal timestamp ties deterministically and preserves totals past the end', () => {
+  const rows = searchCopies(
+    [copy('b', '2026-11-03T10:00:00Z'), copy('a', '2026-11-03T10:00:00Z')],
+    query,
+    'UTC',
+  );
+  expect(rows.map((row) => row.id)).toEqual(['a', 'b']);
+  expect(localPage(rows, 2, 1)).toMatchObject({ content: [], totalElements: 2, totalPages: 2 });
+});
+it('sorts whole-second and fractional timestamps by time rather than their text', () => {
+  const rows = searchCopies(
+    [copy('fraction', '2026-11-03T10:00:00.1Z'), copy('whole', '2026-11-03T10:00:00Z')],
+    query,
+    'UTC',
+  );
+  expect(rows.map((row) => row.id)).toEqual(['whole', 'fraction']);
+});
+
+it('returns an empty page without reading saved access until an approval program is chosen', async () => {
+  const { localApprovals } = await import('./offline-search');
+  expect(await localApprovals({})).toMatchObject({ content: [], totalElements: 0 });
+});
+
+it('lists complete owned copies without the separate access download', async () => {
+  vi.mocked(readCopies).mockResolvedValue([copy('saved', '2026-11-03T10:00:00Z')]);
+  expect(await localRequisitions(query, 'UTC')).toMatchObject({
+    content: [expect.objectContaining({ id: 'saved' })],
+    totalElements: 1,
+  });
+});

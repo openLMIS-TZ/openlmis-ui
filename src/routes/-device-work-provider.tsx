@@ -13,6 +13,7 @@ import {
   fetchUserPrograms,
   fetchUserRecord,
 } from '@/features/reference-data/api/api';
+import { requisitionAccessProvider } from '@/features/requisitions/lib/offline-access';
 import { useOfflineEvents } from '@/features/stock-events/hooks/use-offline-events';
 import { retryDownloadRead } from '@/features/stock-events/lib/download-read';
 import { isPendingDeviceEvent } from '@/features/stock-events/lib/pending-device-event';
@@ -111,7 +112,7 @@ export function deviceAccessReaders(
   purpose: 'download' | 'upload' = 'download',
 ) {
   const read = <T,>(task: () => Promise<T>) =>
-    purpose === 'download' ? retryDownloadRead(task, check) : task();
+    purpose === 'download' ? retryDownloadRead(task, check, 1) : task();
   return {
     permissions: (id: string) => read(() => fetchPermissionStrings(id, config)),
     user: (id: string) => read(() => fetchUserRecord(id, config)),
@@ -157,7 +158,7 @@ export function startDeviceWorkServices(
       if (!active) return;
       const services = coordinator.startOfflineCoordinator({
         initialTrigger,
-        providers: stockEventDownloadProviders(),
+        providers: [requisitionAccessProvider, ...stockEventDownloadProviders()],
         access: deviceAccessReaders,
         onTimeZoneFallback: () =>
           toast.info(i18n.t('offline.download.time-zone-fallback-title'), {

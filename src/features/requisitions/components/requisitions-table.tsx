@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { type ColumnVisibilityState, createColumnHelper, useTable } from '@tanstack/react-table';
 import { ClipboardListIcon, SearchXIcon } from 'lucide-react';
 import { useDeferredValue, useEffect, useMemo } from 'react';
@@ -14,6 +14,8 @@ import { DataTablePagination } from '@/components/data-table/data-table-paginati
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { requisitionSearchOptions } from '@/features/requisitions/api/queries';
+import { OfflineMarker } from '@/features/requisitions/components/offline-marker';
+import { RequisitionCopyNotice } from '@/features/requisitions/components/requisition-copy-notice';
 import {
   cardColumns,
   EMERGENCY_COLUMN,
@@ -22,8 +24,13 @@ import {
   RequisitionListSkeleton,
   RequisitionListTable,
   requisitionListCell,
-  ViewRequisition,
 } from '@/features/requisitions/components/requisition-list-parts';
+import { RequisitionRowActions } from '@/features/requisitions/components/requisition-row-actions';
+import { useListConnection } from '@/features/requisitions/hooks/use-list-connection';
+import {
+  RequisitionCopiesContext,
+  useOfflineCopies,
+} from '@/features/requisitions/hooks/use-offline-copies';
 import {
   CLEARED_REQUISITION_FILTERS,
   hasRequisitionFilters,
@@ -36,7 +43,10 @@ import type { RequisitionSearchResult } from '@/features/requisitions/lib/types'
 import { useDeploymentTimeZone } from '@/hooks/use-deployment-time-zone';
 import { usePagedTableSearch } from '@/hooks/use-page-start';
 import { tableValue } from '@/lib/empty-value';
+import { isDeviceAccess } from '@/lib/offline-access';
+import { useOnline } from '@/lib/online';
 import { REQUISITION_STATUS } from '@/lib/requisition-status';
+import { isSecureOrigin } from '@/lib/secure-context';
 import { type SearchChange, toPaginationState } from '@/lib/table-search';
 
 const helper = createColumnHelper<DataTableFeatures, RequisitionSearchResult>();
@@ -45,8 +55,11 @@ const COLUMNS = [
   ['createdDate', 'requisitions.columns.date-initiated'],
   ['status', 'requisitions.columns.status'],
   EMERGENCY_COLUMN,
+  ['offline', 'requisitions.offline.label'],
 ] as const;
-export const REQUISITION_HIDEABLE_COLUMNS = hideableColumns(COLUMNS);
+export const REQUISITION_HIDEABLE_COLUMNS = hideableColumns(
+  COLUMNS.filter(([id]) => isSecureOrigin || id !== 'offline'),
+);
 const CARD_COLUMNS = cardColumns(COLUMNS);
 const NO_ROWS: RequisitionSearchResult[] = [];
 const noop = () => {};
@@ -54,6 +67,7 @@ const rowId = (row: RequisitionSearchResult) => row.id;
 
 type Props = {
   cards: boolean;
+  refresh?: number;
   search: RequisitionSearch & { facility: string };
   columns: ColumnVisibilityState;
   onSearchChange: SearchChange<RequisitionSearch>;
@@ -65,40 +79,44 @@ function useColumns(search: RequisitionSearch, stale: boolean, cards: boolean) {
   return useMemo(
     () =>
       helper.columns([
-        ...(cards ? CARD_COLUMNS : COLUMNS).map(([id, key]) =>
-          helper.display({
-            id,
-            ...(id === 'createdDate' && {
-              accessorFn: (record: RequisitionSearchResult) => record.createdDate,
-            }),
-            meta: { label: t(key) },
-            enableSorting: id === 'createdDate',
-            sortDescFirst: true,
-            header: ({ column }) =>
-              id === 'createdDate' ? (
-                <DataTableColumnHeader column={column} title={t(key)} />
-              ) : (
-                <DataTableHeaderLabel>{t(key)}</DataTableHeaderLabel>
-              ),
-            cell: ({ row: { original: record } }) => {
-              switch (id) {
-                case 'status': {
-                  const status = REQUISITION_STATUS[record.status];
-                  if (!status) return tableValue(record.status);
-                  const Icon = status.icon;
-                  return (
-                    <Badge variant={status.tone}>
-                      <Icon data-icon="inline-start" />
-                      {t(status.labelKey)}
-                    </Badge>
-                  );
+        ...(cards ? CARD_COLUMNS : COLUMNS)
+          .filter(([id]) => isSecureOrigin || id !== 'offline')
+          .map(([id, key]) =>
+            helper.display({
+              id,
+              ...(id === 'createdDate' && {
+                accessorFn: (record: RequisitionSearchResult) => record.createdDate,
+              }),
+              meta: { label: t(key) },
+              enableSorting: id === 'createdDate',
+              sortDescFirst: true,
+              header: ({ column }) =>
+                id === 'createdDate' ? (
+                  <DataTableColumnHeader column={column} title={t(key)} />
+                ) : (
+                  <DataTableHeaderLabel>{t(key)}</DataTableHeaderLabel>
+                ),
+              cell: ({ row: { original: record } }) => {
+                switch (id) {
+                  case 'offline':
+                    return <OfflineMarker id={record.id} />;
+                  case 'status': {
+                    const status = REQUISITION_STATUS[record.status];
+                    if (!status) return tableValue(record.status);
+                    const Icon = status.icon;
+                    return (
+                      <Badge variant={status.tone}>
+                        <Icon data-icon="inline-start" />
+                        {t(status.labelKey)}
+                      </Badge>
+                    );
+                  }
+                  default:
+                    return requisitionListCell(id, record, i18n.language, timeZone, t);
                 }
-                default:
-                  return requisitionListCell(id, record, i18n.language, timeZone, t);
-              }
-            },
-          }),
-        ),
+              },
+            }),
+          ),
         helper.display({
           id: 'actions',
           meta: { label: t('requisitions.columns.actions'), skeleton: 'control' },
@@ -106,7 +124,7 @@ function useColumns(search: RequisitionSearch, stale: boolean, cards: boolean) {
             <DataTableHeaderLabel>{t('requisitions.columns.actions')}</DataTableHeaderLabel>
           ),
           cell: ({ row }) => (
-            <ViewRequisition disabled={stale} record={row.original} linkProps={{ search }} />
+            <RequisitionRowActions disabled={stale} record={row.original} search={search} />
           ),
         }),
       ]),
@@ -150,10 +168,32 @@ function useResultsTable({
   return { table, pageStart };
 }
 
-export function RequisitionsTable({ cards, search, columns, onSearchChange }: Props) {
+export function RequisitionsTable({ cards, search, columns, onSearchChange, refresh }: Props) {
   const { t } = useTranslation();
+  const copies = useOfflineCopies();
   const deferred = useDeferredValue(search);
-  const { data: page } = useSuspenseQuery(requisitionSearchOptions(toRequisitionQuery(deferred)));
+  const online = useOnline();
+  const timeZone = useDeploymentTimeZone();
+  const sourceOnline = useListConnection(deferred, refresh);
+  const client = useQueryClient();
+  const options = requisitionSearchOptions(
+    toRequisitionQuery(deferred),
+    sourceOnline,
+    !!deferred.offline,
+    timeZone,
+  );
+  const retained = !online && sourceOnline && !deferred.offline;
+  const { data: page, dataUpdatedAt } = useSuspenseQuery({
+    ...options,
+    ...(retained && {
+      staleTime: Infinity,
+      queryFn: () =>
+        client.getQueryData(options.queryKey) ??
+        client.fetchQuery(
+          requisitionSearchOptions(toRequisitionQuery(deferred), false, true, timeZone),
+        ),
+    }),
+  });
   const stale = deferred !== search;
   const { table, pageStart } = useResultsTable({
     cards,
@@ -168,7 +208,8 @@ export function RequisitionsTable({ cards, search, columns, onSearchChange }: Pr
   useEffect(() => {
     if (pastEnd) onSearchChange({ page: page.totalPages > 1 ? page.totalPages : undefined }, true);
   }, [pastEnd, page.totalPages, onSearchChange]);
-  const empty = hasRequisitionFilters(deferred) ? (
+  const local = !sourceOnline || !!deferred.offline || isDeviceAccess(page);
+  const empty = hasRequisitionFilters({ ...deferred, offline: undefined }) ? (
     <DataTableEmpty
       action={
         <Button variant="destructive" onClick={() => onSearchChange(CLEARED_REQUISITION_FILTERS)}>
@@ -181,21 +222,31 @@ export function RequisitionsTable({ cards, search, columns, onSearchChange }: Pr
     />
   ) : (
     <DataTableEmpty
-      description={t('requisitions.view.empty-description')}
+      description={t(
+        local ? 'requisitions.offline.empty-description' : 'requisitions.view.empty-description',
+      )}
       icon={<ClipboardListIcon />}
-      title={t('requisitions.view.empty-title')}
+      title={t(local ? 'requisitions.offline.empty-title' : 'requisitions.view.empty-title')}
     />
   );
   const footer = !pastEnd && page.totalElements > 0 && <DataTablePagination table={table} />;
   return (
-    <RequisitionListTable
-      cards={cards}
-      table={table}
-      stale={stale}
-      empty={!pastEnd && empty}
-      footer={footer}
-      listRef={pageStart.ref}
-    />
+    <RequisitionCopiesContext value={copies}>
+      <RequisitionCopyNotice
+        list
+        onlineResultsAt={retained && !isDeviceAccess(page) ? dataUpdatedAt : undefined}
+        local={!!deferred.offline || isDeviceAccess(page)}
+        ids={page.content.map((record) => record.id)}
+      />
+      <RequisitionListTable
+        cards={cards}
+        table={table}
+        stale={stale}
+        empty={!pastEnd && empty}
+        footer={footer}
+        listRef={pageStart.ref}
+      />
+    </RequisitionCopiesContext>
   );
 }
 

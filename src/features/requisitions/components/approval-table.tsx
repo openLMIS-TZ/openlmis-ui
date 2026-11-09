@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import {
   type ColumnVisibilityState,
   createColumnHelper,
@@ -19,6 +19,8 @@ import { DataTablePagination } from '@/components/data-table/data-table-paginati
 import { selectionColumn } from '@/components/data-table/data-table-selection';
 import { Button } from '@/components/ui/button';
 import { approvalListOptions } from '@/features/requisitions/api/queries';
+import { OfflineMarker } from '@/features/requisitions/components/offline-marker';
+import { RequisitionCopyNotice } from '@/features/requisitions/components/requisition-copy-notice';
 import {
   cardColumns,
   EMERGENCY_COLUMN,
@@ -30,6 +32,11 @@ import {
   requisitionRowLabel,
   ViewRequisition,
 } from '@/features/requisitions/components/requisition-list-parts';
+import { useListConnection } from '@/features/requisitions/hooks/use-list-connection';
+import {
+  RequisitionCopiesContext,
+  useOfflineCopies,
+} from '@/features/requisitions/hooks/use-offline-copies';
 import {
   APPROVAL_SORT,
   type ApprovalSearch,
@@ -41,6 +48,9 @@ import { returnState } from '@/features/requisitions/lib/requisition-return';
 import type { ApprovalListRow } from '@/features/requisitions/lib/types';
 import { useDeploymentTimeZone } from '@/hooks/use-deployment-time-zone';
 import { usePagedTableSearch } from '@/hooks/use-page-start';
+import { isDeviceAccess } from '@/lib/offline-access';
+import { useOnline } from '@/lib/online';
+import { isSecureOrigin } from '@/lib/secure-context';
 import { type SearchChange, toPaginationState } from '@/lib/table-search';
 
 const helper = createColumnHelper<DataTableFeatures, ApprovalListRow>();
@@ -49,6 +59,7 @@ const COLUMNS = [
   ['submittedDate', 'requisitions.approve.date-submitted'],
   ['authorizedDate', 'requisitions.approve.date-authorized'],
   EMERGENCY_COLUMN,
+  ...(isSecureOrigin ? [['offline', 'requisitions.offline.label'] as const] : []),
 ] as const;
 export const APPROVAL_HIDEABLE_COLUMNS = hideableColumns(COLUMNS);
 const CARD_COLUMNS = cardColumns(COLUMNS);
@@ -66,9 +77,14 @@ type Props = {
   onSearchChange: SearchChange<ApprovalSearch>;
 };
 
-function useColumns(search: ApprovalSearch, stale: boolean, cards: boolean, batch = false) {
+function useColumns(
+  search: ApprovalSearch,
+  stale: boolean,
+  cards: boolean,
+  timeZone: string,
+  batch = false,
+) {
   const { t, i18n } = useTranslation();
-  const timeZone = useDeploymentTimeZone();
   return useMemo(
     () =>
       helper.columns([
@@ -95,7 +111,11 @@ function useColumns(search: ApprovalSearch, stale: boolean, cards: boolean, batc
                 <DataTableHeaderLabel>{t(key)}</DataTableHeaderLabel>
               ),
             cell: ({ row: { original: record } }) =>
-              requisitionListCell(id, record, i18n.language, timeZone, t),
+              id === 'offline' ? (
+                <OfflineMarker id={record.id} />
+              ) : (
+                requisitionListCell(id, record, i18n.language, timeZone, t)
+              ),
           }),
         ),
         helper.display({
@@ -125,6 +145,7 @@ function useResultsTable({
   onSearchChange,
   data,
   rowCount,
+  timeZone,
   stale,
   batch,
   picked,
@@ -132,18 +153,20 @@ function useResultsTable({
 }: Props & {
   data: ApprovalListRow[];
   rowCount: number;
+  timeZone: string;
   stale: boolean;
 }) {
   const { t } = useTranslation();
+  const online = useOnline();
   const rowSelection = Object.fromEntries(
     [...(picked?.keys() ?? [])].map((id) => [id, true as const]),
   );
-  const defs = useColumns(search, stale, cards, batch);
+  const defs = useColumns(search, stale, cards, timeZone, batch);
   const { pageStart, searchState } = usePagedTableSearch({
     cards,
     search,
     defaultSort: APPROVAL_SORT,
-    defaultPageSize: 20,
+    defaultPageSize: 10,
     onSearchChange,
   });
   const table = useTable({
@@ -168,6 +191,7 @@ function useResultsTable({
         data.map((row, index) => [
           row.id,
           {
+            record: row,
             programId: row.program.id,
             rowIndex: approvalRowIndex(search, index),
             label: requisitionRowLabel(row, t('requisitions.columns.emergency')),
@@ -181,7 +205,7 @@ function useResultsTable({
             return chosen && value ? [[id, value] as const] : [];
           }),
         ),
-        approvalScope(search),
+        approvalScope(search, online),
       );
     },
   });
@@ -198,8 +222,23 @@ export function ApprovalTable({
   onSelection,
 }: Props) {
   const { t } = useTranslation();
+  const copies = useOfflineCopies();
+  const timeZone = useDeploymentTimeZone();
   const deferred = useDeferredValue(search);
-  const { data: page } = useSuspenseQuery(approvalListOptions(deferred));
+  const online = useOnline();
+  const sourceOnline = useListConnection(deferred);
+  const client = useQueryClient();
+  const options = approvalListOptions(deferred, sourceOnline);
+  const retained = !online && sourceOnline && !deferred.offline;
+  const { data: page, dataUpdatedAt } = useSuspenseQuery({
+    ...options,
+    ...(retained && {
+      staleTime: Infinity,
+      queryFn: () =>
+        client.getQueryData(options.queryKey) ??
+        client.fetchQuery(approvalListOptions(deferred, false)),
+    }),
+  });
   const stale = deferred !== search;
   const { table, pageStart } = useResultsTable({
     cards,
@@ -208,6 +247,7 @@ export function ApprovalTable({
     onSearchChange,
     data: page.content,
     rowCount: page.totalElements,
+    timeZone,
     stale,
     batch,
     picked,
@@ -217,37 +257,66 @@ export function ApprovalTable({
   useEffect(() => {
     if (pastEnd) onSearchChange({ page: page.totalPages > 1 ? page.totalPages : undefined }, true);
   }, [pastEnd, page.totalPages, onSearchChange]);
-  const empty = deferred.program ? (
-    <DataTableEmpty
-      action={
-        <Button
-          variant="destructive"
-          onClick={() => onSearchChange({ program: undefined, page: undefined })}
-        >
-          {t('data-table.clear-filters')}
-        </Button>
-      }
-      description={t('requisitions.view.no-matches-description')}
-      icon={<SearchXIcon />}
-      title={t('requisitions.view.no-matches-title')}
-    />
-  ) : (
-    <DataTableEmpty
-      description={t('requisitions.approve.empty-description')}
-      icon={<ClipboardListIcon />}
-      title={t('requisitions.approve.empty')}
-    />
-  );
+  const local = !sourceOnline || !!deferred.offline || isDeviceAccess(page);
+  const empty =
+    local && !deferred.program ? (
+      <DataTableEmpty
+        title={t('requisitions.filters.program')}
+        description={t('requisitions.offline.choose-program')}
+      />
+    ) : local ? (
+      <DataTableEmpty
+        description={t(
+          copies?.length
+            ? 'requisitions.view.no-matches-description'
+            : 'requisitions.offline.empty-description',
+        )}
+        icon={copies?.length ? <SearchXIcon /> : <ClipboardListIcon />}
+        title={t(
+          copies?.length
+            ? 'requisitions.view.no-matches-title'
+            : 'requisitions.offline.empty-title',
+        )}
+      />
+    ) : deferred.program ? (
+      <DataTableEmpty
+        action={
+          <Button
+            variant="destructive"
+            onClick={() => onSearchChange({ program: undefined, page: undefined })}
+          >
+            {t('data-table.clear-filters')}
+          </Button>
+        }
+        description={t('requisitions.view.no-matches-description')}
+        icon={<SearchXIcon />}
+        title={t('requisitions.view.no-matches-title')}
+      />
+    ) : (
+      <DataTableEmpty
+        description={t('requisitions.approve.empty-description')}
+        icon={<ClipboardListIcon />}
+        title={t('requisitions.approve.empty')}
+      />
+    );
   const footer = !pastEnd && page.totalElements > 0 && <DataTablePagination table={table} />;
   return (
-    <RequisitionListTable
-      cards={cards}
-      table={table}
-      stale={stale}
-      empty={!pastEnd && empty}
-      footer={footer}
-      listRef={pageStart.ref}
-    />
+    <RequisitionCopiesContext value={copies}>
+      <RequisitionCopyNotice
+        list
+        onlineResultsAt={retained && !isDeviceAccess(page) ? dataUpdatedAt : undefined}
+        local={!!deferred.offline || isDeviceAccess(page)}
+        ids={page.content.map((record) => record.id)}
+      />
+      <RequisitionListTable
+        cards={cards}
+        table={table}
+        stale={stale}
+        empty={!pastEnd && empty}
+        footer={footer}
+        listRef={pageStart.ref}
+      />
+    </RequisitionCopiesContext>
   );
 }
 
@@ -264,9 +333,10 @@ export function ApprovalTableSkeleton({
     onSearchChange: noop,
     data: NO_ROWS,
     rowCount: 0,
+    timeZone: 'UTC',
     stale: false,
     batch,
   });
-  const rowCount = toPaginationState(search, 20).pageSize;
+  const rowCount = toPaginationState(search, 10).pageSize;
   return <RequisitionListSkeleton cards={cards} rowCount={rowCount} table={table} />;
 }

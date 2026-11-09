@@ -61,14 +61,14 @@ export function searchFacilityOptions(
         });
     }
   }
-  return [...result.values()].sort((a, b) =>
-    (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' }),
-  );
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base' });
+  return [...result.values()].sort((a, b) => collator.compare(a.name ?? '', b.name ?? ''));
 }
 
-export const REQUISITIONS_PAGE_SIZE = 20;
+export const REQUISITIONS_PAGE_SIZE = 10;
 export const REQUISITIONS_SORT = { id: 'createdDate', desc: true };
 export const requisitionSearchSchema = tableSearchSchema(['createdDate']).extend({
+  offline: z.boolean().optional().catch(undefined),
   facility: textFilterSchema,
   program: textFilterSchema,
   status: z.enum(REQUISITION_STATUSES).optional().catch(undefined),
@@ -79,6 +79,7 @@ export type RequisitionSearch = z.infer<typeof requisitionSearchSchema>;
 export const invalidDateRange = (search: RequisitionSearch) =>
   Boolean(search.initiatedFrom && search.initiatedTo && search.initiatedFrom > search.initiatedTo);
 export const CLEARED_REQUISITION_FILTERS = {
+  offline: undefined,
   program: undefined,
   status: undefined,
   initiatedFrom: undefined,
@@ -86,7 +87,9 @@ export const CLEARED_REQUISITION_FILTERS = {
   page: undefined,
 };
 export const activeRequisitionFilterCount = (search: RequisitionSearch) =>
-  [search.program, search.status, search.initiatedFrom, search.initiatedTo].filter(Boolean).length;
+  [search.offline, search.program, search.status, search.initiatedFrom, search.initiatedTo].filter(
+    Boolean,
+  ).length;
 export const hasRequisitionFilters = (search: RequisitionSearch) =>
   activeRequisitionFilterCount(search) > 0;
 

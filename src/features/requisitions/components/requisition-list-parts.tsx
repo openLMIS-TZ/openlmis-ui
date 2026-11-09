@@ -2,23 +2,26 @@ import type { HistoryState } from '@tanstack/react-router';
 import { Link } from '@tanstack/react-router';
 import type { RowData } from '@tanstack/react-table';
 import type { ParseKeys, TFunction } from 'i18next';
-import { EyeIcon } from 'lucide-react';
-import type { ReactNode, Ref } from 'react';
+import { ClipboardCheckIcon, EyeIcon } from 'lucide-react';
+import { type ReactNode, type Ref, use } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   DataTable,
   type DataTableInstance,
   DataTableSkeleton,
 } from '@/components/data-table/data-table';
-import { CardActions, useInCards } from '@/components/display/card-actions';
+import { type CardAction, CardActions, useInCards } from '@/components/display/card-actions';
 import { TableCards, TableCardsSkeleton } from '@/components/display/table-cards';
 import { WrappingCell } from '@/components/display/wrapping-cell';
 import { formatDateValue, formatTimestamp } from '@/components/form/date-value';
 import { FlagBadge } from '@/components/shared/flag-badge';
 import { Button } from '@/components/ui/button';
+import { RequisitionCopiesContext } from '@/features/requisitions/hooks/use-offline-copies';
+import { returnState } from '@/features/requisitions/lib/requisition-return';
 import type { RequisitionSearch } from '@/features/requisitions/lib/search-facilities';
 import type { ApprovalListRow, RequisitionSearchResult } from '@/features/requisitions/lib/types';
 import { tableValue } from '@/lib/empty-value';
+import { useOnline } from '@/lib/online';
 
 type ListRecord = RequisitionSearchResult | Omit<ApprovalListRow, 'status'>;
 export const requisitionRowLabel = (row: ListRecord, emergency: string) =>
@@ -116,14 +119,22 @@ export function ViewRequisition({
   linkProps,
   disabled,
   includeFacility = false,
+  actions = [],
 }: {
   record: ListRecord;
   linkProps: { search: RequisitionSearch } | { state: HistoryState };
   disabled: boolean;
   includeFacility?: boolean;
+  actions?: CardAction[];
 }) {
   const { t } = useTranslation();
   const cards = useInCards();
+  const online = useOnline();
+  const copy = use(RequisitionCopiesContext)?.find((copy) => copy.id === record.id);
+  const rowDisabled = disabled;
+  const unavailable = !online && !copy?.single;
+  disabled ||= unavailable;
+  const label = t('requisitions.view.action');
   const name = t('requisitions.view.action-name', {
     program: record.program?.name ?? '',
     period: includeFacility
@@ -132,6 +143,32 @@ export function ViewRequisition({
           .join(' - ')
       : (record.processingPeriod?.name ?? ''),
   });
+  const batchAction: CardAction[] =
+    !online && copy?.batch
+      ? [
+          {
+            id: 'batch',
+            icon: <ClipboardCheckIcon />,
+            label: t('requisitions.batch.title'),
+            name: t('requisitions.batch.action-label', {
+              requisition: requisitionRowLabel(record, t('requisitions.columns.emergency')),
+            }),
+            disabled: rowDisabled,
+            link: (
+              <Link
+                to="/requisitions/approve/batch"
+                search={{ ids: record.id, program: record.program?.id }}
+                state={
+                  'state' in linkProps
+                    ? linkProps.state
+                    : returnState({ to: '/requisitions/view', search: linkProps.search })
+                }
+              />
+            ),
+          },
+        ]
+      : [];
+  actions = [...batchAction, ...actions];
   const link = (
     <Link
       aria-label={name}
@@ -150,18 +187,37 @@ export function ViewRequisition({
           {
             id: 'view',
             icon: <EyeIcon />,
-            label: t('requisitions.view.action'),
+            label: unavailable ? t('offline.unavailable-title') : label,
             name,
+            focusableWhenDisabled: unavailable,
             link,
             disabled,
           },
+          ...actions,
         ]}
       />
     );
   return (
-    <Button aria-label={name} disabled={disabled} nativeButton={false} render={link} size="sm">
-      {t('requisitions.view.action')}
-    </Button>
+    <div className="flex items-center justify-end gap-1">
+      <Button
+        aria-label={name}
+        title={unavailable ? t('offline.unavailable-title') : undefined}
+        aria-description={unavailable ? t('offline.unavailable-title') : undefined}
+        disabled={disabled}
+        focusableWhenDisabled={unavailable}
+        nativeButton={false}
+        render={link}
+        size="sm"
+      >
+        {label}
+      </Button>
+      <CardActions
+        label={t('card-actions.actions-for', {
+          name: [record.program?.name, record.processingPeriod?.name].filter(Boolean).join(' - '),
+        })}
+        actions={actions}
+      />
+    </div>
   );
 }
 

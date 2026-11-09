@@ -4,8 +4,8 @@ Adjustments, Issue and Receive can use downloaded data, save drafts and submit e
 connection. Home, Offline Events, downloaded home-facility Stock On Hand, saved Stock Cards and
 Physical Inventory drafts opened online on this device also open offline. Unpack needs a
 connection. The old UI cannot open Unpack offline, though an already-open editor can queue.
-Transaction History, other stock pages, requisitions, administration, printing and PDF downloads
-need a connection.
+Saved requisitions and saved approval batches also reopen offline. Transaction History, other
+stock pages, administration, printing and PDF downloads need a connection.
 
 ## Before You Disconnect
 
@@ -41,6 +41,45 @@ Connect To Open This Page; Close returns to the item you selected.
 If a page cannot load offline because part of the app was not saved on this device, Not
 Available Offline appears. Try Again reloads the app from the device, which usually opens the
 page. Other errors show the normal error page, offline too, and Try Again loads the page again.
+
+## Saved Requisitions
+
+Open a requisition or approval batch while connected to save a complete copy automatically.
+Wait until saving finishes and check the Offline marker in View or Approve. Copies belong to
+this user, browser and deployment. A clean copy does not count as unsynced work. Earlier copies
+and edits stay intact if a download or device save fails; reconnect and use Try Again.
+
+View's Offline Only filter searches saved copies. If you disconnect while viewing online results
+in View or Approve, those results stay visible with a notice showing when they loaded online.
+Searching, changing a filter, paging or sorting while disconnected switches to saved copies.
+Facility, program, status, initiated dates and sorting apply before paging. Approve keeps its
+Program filter: select a program to see its saved approvals offline.
+The saved-time notice describes a snapshot; status and approval rights may have changed since
+it was saved. Saving a batch checks which records are still in your approval list. Eligible
+records are saved even if another record is no longer awaiting your approval. Those columns
+stay read-only and are excluded from the total for all facilities.
+If approval access is refused, the data and edits stay on this device, but batch reopening needs
+a new online verification. Removing a saved approval grant also requires online verification.
+Submit, Authorize, Approve and Reject refresh or remove saved copies to match the new server
+state. Delete, Skip, Convert To Order and Release Without Order remove the affected copies.
+Confirmed approvals update the saved status; completed approvals reopen with read-only quantities.
+
+Reopen a saved requisition to edit its lines, patients or comments. Eligible Add Products choices
+are saved with that requisition. Edits save automatically on this device. Reopen a saved batch
+to edit its quantities. Save/Sync With Server and server transitions still need a connection;
+reconnecting never sends these edits automatically. A batch-only Offline marker offers the
+saved batch and does not promise a single-requisition copy.
+
+View's Remove From This Device asks for confirmation and keeps the server requisition. If there
+are unsynced single-requisition edits, the warning says that removal discards them too. Batch
+quantities and uncertain approval attempts block removal until reviewed. A changed copy requires
+a new confirmation. Other open editors stop saving after removal and ask you to reload. Opening
+the requisition online later can save a new copy.
+
+Old device edits without a complete copy remain on this device. Connect and open their
+requisition before trying to reopen it offline. Existing conflict and Update controls protect
+edits based on an older server version. Device copies require HTTPS or a trusted local origin;
+plain HTTP keeps the existing online-only policy.
 
 ## Drafts And Submit Offline
 
@@ -111,16 +150,18 @@ earlier device copy. It does not delete the current server draft.
 
 ## Requisition Drafts
 
-Requisitions need a connection to open. Once open, edits save automatically on this device.
-Wait for Saved On This Device before closing the browser. Reopen the requisition online in the
-same browser profile, signed in as the same user, to continue your saved draft.
+Complete saved requisitions reopen offline in the same browser profile for the same user.
+Edits save automatically. Wait for Saved On This Device before closing the browser. A device
+draft from an older app version may need an online open first to obtain its complete baseline.
 
 Save/Sync With Server, Submit and Authorize need a connection. Saved On This Device confirms local
 storage; Save/Sync With Server sends your changes to the server. Changes are not sent automatically
 when you reconnect.
 
-If the server copy changes while you have local edits, an outdated draft notice offers Update.
-Update asks for confirmation, then replaces your local edits with the latest server copy.
+If the server copy changes while you have local edits, use Recover Edits to keep your changes
+alongside changes made on the server. If both versions changed the same field, choose which
+value to keep in Resolve Changed Fields. Update asks for confirmation, then replaces your local
+edits with the latest server copy.
 Keep the page open if saving fails and use Retry before leaving.
 
 ## Reconnect And Review Offline Events
